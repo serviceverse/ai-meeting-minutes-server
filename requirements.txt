@@ -1,0 +1,16 @@
+fastapi
+uvicorn
+
+pydantic
+python-dotenv
+
+uuid
+langchain==0.3.27
+langchain-community==0.3.31
+langchain-core==0.3.80
+
+langchain-openai==0.3.35
+
+langchain-text-splitters==0.3.11
+langgraph==1.0.1
+python-multipart
