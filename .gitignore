@@ -25,5 +25,4 @@ dist-ssr
 chat_histories
 __pycache__
 .venv
-.env
 .env.example
