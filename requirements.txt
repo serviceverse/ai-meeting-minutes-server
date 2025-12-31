@@ -14,3 +14,4 @@ langchain-openai==0.3.35
 langchain-text-splitters==0.3.11
 langgraph==1.0.1
 python-multipart
+faster-whisper

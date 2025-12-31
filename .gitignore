@@ -26,3 +26,4 @@ chat_histories
 __pycache__
 .venv
 .env.example
+jobs/*

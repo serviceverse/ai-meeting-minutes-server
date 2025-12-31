@@ -21,47 +21,7 @@ FIRST_RUN_MARKER = HISTORY_DIR / ".first_run_complete"
 # Format: {session_file_path: deletion_timestamp}
 SESSION_TRACKER = {}
 
-# Define OpenAI JSON Schema for Itinerary Planning
-TOOLS_SCHEMA = [
-    {
-        "type": "function",
-        "function": {
-            "name": "generate_itinerary",
-            "description": "Generate a detailed travel itinerary based on user requirements. Create day-by-day plans with activities, places to visit, restaurants, and recommendations. Format the response in Markdown with proper structure including day headers, time periods (Morning, Afternoon, Evening), and place links using [[Place Name|place_id]] format.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "destination": {
-                        "type": "string",
-                        "description": "The destination city or location for the trip"
-                    },
-                    "duration": {
-                        "type": "string",
-                        "description": "Duration of the trip (e.g., '3 days', '1 week', 'weekend')"
-                    },
-                    "interests": {
-                        "type": "array",
-                        "items": {"type": "string"},
-                        "description": "List of interests or activities the user wants to experience (e.g., 'museums', 'food', 'nature', 'nightlife')"
-                    },
-                    "budget": {
-                        "type": "string",
-                        "description": "Budget range or preference (e.g., 'budget', 'mid-range', 'luxury')"
-                    },
-                    "itineraryContent": {
-                        "type": "string",
-                        "description": "The complete itinerary content in Markdown format with day-by-day breakdown, including morning, afternoon, and evening activities. Use [[Place Name|place_id]] format for place links."
-                    },
-                    "additionalNotes": {
-                        "type": "string",
-                        "description": "Any additional tips, recommendations, or important information for the traveler"
-                    }
-                },
-                "required": ["destination", "duration", "itineraryContent"]
-            }
-        }
-    }
-]
+# Note: No tool schema needed for meeting notes chat - using conversational responses only
 
 def get_session_history(session_id: str):
     """Get chat history for a session"""
@@ -175,17 +135,15 @@ _cleanup_thread.start()
 
 def invoke_agent(session_id: str, system_prompt: str, message: str) -> str:
     """
-    Invokes the agent with tool calling using OpenAI function calling.
-    Returns the response text directly for chat-based itinerary planning.
+    Invokes the agent for meeting notes chat using conversational responses.
+    Returns the response text directly for chat-based meeting assistance.
     """
-    config = {"configurable": {"session_id": session_id}}
-    
-    # Initialize LLM with tool binding
+    # Initialize LLM for conversational chat (no tool binding needed)
     llm = ChatOpenAI(
         model="gpt-4o",
         api_key=api_key,
-        temperature=0.7,
-    ).bind(tools=TOOLS_SCHEMA)
+        temperature=0.7,  # Good balance for conversational responses
+    )
     
     # Get session history
     history = get_session_history(session_id)
@@ -198,55 +156,19 @@ def invoke_agent(session_id: str, system_prompt: str, message: str) -> str:
         HumanMessage(content=message)
     ]
     
-    print(f"\n[AGENT] Processing user request: {message}")
+    print(f"\n[AGENT] Processing user request: {message[:100]}")
     
-    # LLM call to get tool calls with content
+    # LLM call to get conversational response
     response = llm.invoke(current_messages)
     
-    # Extract response text for fallback
+    # Extract response text
     response_text = response.content if hasattr(response, 'content') else ""
     
-    # Check if the response contains tool calls
-    if hasattr(response, 'tool_calls') and response.tool_calls:
-        print(f"[AGENT] Tool calls detected: {len(response.tool_calls)}")
-        
-        # Process each tool call - extract itinerary content directly from arguments
-        for tool_call in response.tool_calls:
-            tool_name = tool_call.get('name')
-            tool_args = tool_call.get('args', {})
-            
-            print(f"[AGENT] Executing tool: {tool_name}")
-            
-            # Get the itinerary content directly from tool call arguments
-            itinerary_content = tool_args.get("itineraryContent", "")
-            additional_notes = tool_args.get("additionalNotes", "")
-            
-            # Combine itinerary content with additional notes
-            if itinerary_content:
-                if additional_notes:
-                    final_response_text = f"{itinerary_content}\n\n---\n\n**Additional Notes:**\n{additional_notes}"
-                else:
-                    final_response_text = itinerary_content
-                
-                # Save conversation to history
-                history.add_message(HumanMessage(content=message))
-                history.add_message(AIMessage(content=final_response_text))
-                
-                print(f"[AGENT] ✓ Successfully generated itinerary")
-                return json.dumps({
-                    "success": True,
-                    "message": final_response_text
-                })
-        
-        # If tool calls exist but no valid content, fall through to text response
-        print(f"[AGENT] Tool calls found but no valid content, using response text")
-    
-    # No tool calls or fallback: return regular response text
-    print(f"[AGENT] Returning conversational response")
-    
-    # Save to history
+    # Save conversation to history
     history.add_message(HumanMessage(content=message))
     history.add_message(AIMessage(content=response_text))
+    
+    print(f"[AGENT] ✓ Generated conversational response")
     
     return json.dumps({
         "success": True,
@@ -328,7 +250,7 @@ def process_meeting_minutes(transcript: str, options: dict = None) -> dict:
     
     # Initialize LLM with meeting minutes tool binding
     llm = ChatOpenAI(
-        model="gpt-4o",
+        model="gpt-4.1",
         api_key=api_key,
         temperature=0.3,  # Lower temperature for more consistent extraction
     ).bind(tools=MEETING_MINUTES_TOOLS_SCHEMA)
@@ -357,7 +279,7 @@ Be thorough and accurate. If information is not available in the transcript, mak
 
 Extract all relevant information including summary, detailed minutes, key decisions, and action items."""
     
-    print(f"\n[AGENT] Processing meeting minutes from transcript (length: {len(transcript)} chars)")
+    print(f"\n[AGENT] Processing meeting minutes from transcript (length: {(transcript)} chars)")
     
     messages = [
         SystemMessage(content=system_prompt),
@@ -366,6 +288,7 @@ Extract all relevant information including summary, detailed minutes, key decisi
     
     # LLM call to get structured extraction
     response = llm.invoke(messages)
+    print(f"responseresponseresponse",response)
     
     # Extract response
     if hasattr(response, 'tool_calls') and response.tool_calls:
@@ -417,7 +340,7 @@ Extract all relevant information including summary, detailed minutes, key decisi
     }
 
 
-def answer_meeting_question(meeting_context: dict, question: str, session_id: str = None) -> str:
+def answer_meeting_question(meeting_context: dict, question: str, session_id: str = None, transcription: dict = None) -> str:
     """
     Answer questions about meeting results using the meeting context.
     
@@ -425,6 +348,7 @@ def answer_meeting_question(meeting_context: dict, question: str, session_id: st
         meeting_context: Dictionary containing meeting results (summary, mom, keyDecisions, actionItems, metadata)
         question: User's question about the meeting
         session_id: Optional session ID for conversation history
+        transcription: Optional dictionary containing transcription with timestamps
         
     Returns:
         JSON string with success and message fields
@@ -455,16 +379,44 @@ Meeting Metadata:
 - Participants: {', '.join(meeting_context.get('metadata', {}).get('participants', []))}
 """
     
+    # Add transcription with timestamps if available
+    if transcription and transcription.get('text'):
+        transcription_text = "\n\nFull Meeting Transcription (with timestamps):\n"
+        if transcription.get('segments'):
+            # Include segments with timestamps
+            for segment in transcription.get('segments', [])[:100]:  # Limit to first 100 segments to avoid token limits
+                start_time = segment.get('start', 0)
+                end_time = segment.get('end', 0)
+                text = segment.get('text', '')
+                # Format time as MM:SS
+                start_min, start_sec = divmod(int(start_time), 60)
+                end_min, end_sec = divmod(int(end_time), 60)
+                transcription_text += f"[{start_min:02d}:{start_sec:02d} - {end_min:02d}:{end_sec:02d}] {text}\n"
+        else:
+            # Fallback to plain text if no segments
+            transcription_text += transcription.get('text', '')[:3000]  # Limit to 3000 chars
+        
+        context_text += transcription_text
+    
     system_prompt = """You are an AI assistant that helps users understand meeting minutes and results. Your role is to:
 
 1. Answer questions about the meeting content, decisions, action items, and participants
-2. Provide specific information from the meeting minutes when available
-3. Be concise and accurate - only use information from the provided meeting context
-4. If information is not available in the context, clearly state that
-5. Help users understand timelines, responsibilities, and next steps
-6. Be conversational and helpful
+2. Provide specific information from the meeting minutes and full transcription when available
+3. Reference specific timestamps when discussing particular parts of the conversation
+4. Be concise and accurate - only use information from the provided meeting context
+5. If information is not available in the context, clearly state that
+6. Help users understand timelines, responsibilities, and next steps
+7. Be conversational and helpful
 
-Always base your answers on the meeting context provided. Do not make up information."""
+IMPORTANT FORMATTING INSTRUCTIONS:
+- Always use proper newline characters (\\n) to separate paragraphs and sections
+- Use double newlines (\\n\\n) between major sections or topics
+- Format lists with proper line breaks - each list item should be on a new line
+- When providing structured information (like action items or decisions), use clear line breaks to separate each item
+- Preserve and include newline characters in your responses to ensure proper formatting and readability
+- Use markdown formatting where appropriate (bullets, numbered lists, headers) with proper newlines
+
+Always base your answers on the meeting context and transcription provided. When referencing specific parts of the conversation, include the timestamp if available. Do not make up information."""
     
     user_message = f"""Based on the following meeting information, please answer this question:
 

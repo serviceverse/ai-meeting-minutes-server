@@ -6,6 +6,7 @@ from models import (
     ChatRequest, ChatResponse, UploadResponse, ProcessRequest, ProcessResponse,
     StatusResponse, ResultsResponse, MeetingChatRequest, MeetingChatResponse
 )
+from audio_processor import transcribe_audio
 import os
 from dotenv import load_dotenv
 import json
@@ -116,7 +117,7 @@ print(f"[STORAGE] Loaded {len(JOBS_STORAGE)} jobs from disk")
 @app.post("/api/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """
-    Chat endpoint for itinerary planning.
+    Chat endpoint for meeting notes and general meeting-related assistance.
     
     Request body:
     - message: String containing user's message/query
@@ -131,21 +132,22 @@ async def chat(request: ChatRequest):
         if not os.getenv("OPENAI_API_KEY"):
             raise HTTPException(status_code=500, detail="OPENAI_API_KEY not found in environment variables.")
 
-        # Create system prompt for the itinerary planning agent
-        system_prompt = """You are an expert travel planner and itinerary builder. Your role is to help users plan amazing trips by:
+        # Create system prompt for meeting notes assistance
+        system_prompt = """You are an expert meeting assistant and meeting notes analyst. Your role is to help users with meeting-related tasks by:
 
-1. Understanding their travel preferences, interests, and requirements
-2. Creating detailed, day-by-day itineraries with specific activities, places to visit, and recommendations
-3. Formatting responses in Markdown with clear structure:
-   - Use ### for day headers (e.g., ### Day 1 - City Name)
-   - Use #### for time periods (e.g., #### ☀️ Morning, #### 🌤️ Afternoon, #### 🌙 Evening)
-   - Use **bold** for important place names
-   - Use [[Place Name|place_id]] format for place links (e.g., [[Rijksmuseum|place_rijks]])
-   - Include practical tips, restaurant recommendations, and cultural insights
-4. Being conversational and helpful, asking clarifying questions when needed
-5. Remembering context from previous messages in the conversation
+1. Understanding questions about meetings, meeting minutes, action items, and decisions
+2. Providing insights and analysis based on meeting content
+3. Helping users understand meeting outcomes, action items, and responsibilities
+4. Assisting with creating, organizing, and managing meeting notes
+5. Answering questions about meeting participants, decisions, and timelines
+6. Formatting responses in Markdown with clear structure when needed:
+   - Use **bold** for important points, action items, and decisions
+   - Use bullet points for lists of action items or decisions
+   - Use ### for section headers when organizing information
+7. Being conversational and helpful, asking clarifying questions when needed
+8. Remembering context from previous messages in the conversation
 
-Always provide detailed, actionable itineraries that help travelers make the most of their trips."""
+Always provide helpful, accurate, and actionable responses about meetings and meeting notes. If a user asks about a specific meeting, ask for the meeting details or job ID if needed."""
 
         # Invoke agent with the user message
         response_json = invoke_agent(
@@ -262,7 +264,11 @@ async def start_processing(request: ProcessRequest, background_tasks: Background
             "status": "processing",
             "progress": 0,
             "startTime": time.time(),
+            "startTimeISO": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "options": request.options,
+            "transcription": None,
+            "transcriptionTimestamp": None,
+            "findingsTimestamp": None,
             "result": None
         }
         JOBS_STORAGE[job_id] = job_data
@@ -308,18 +314,58 @@ def process_job(job_id: str, file_path: Path, upload_data: dict):
         print(f"[JOB {job_id}] Progress: 10%")
         
         # Read file content
-        # For now, we'll handle text files. Audio/video would need transcription service
+        # Handle text files and audio/video files with transcription
         content = ""
+        transcription_data = None
+        transcription_timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+        
         if upload_data["type"].startswith("text/"):
             print(f"[JOB {job_id}] Reading text file...")
             with open(file_path, "r", encoding="utf-8") as f:
                 content = f.read()
             print(f"[JOB {job_id}] ✓ File read successfully: {len(content)} characters")
+            # Store text content as transcription
+            transcription_data = {
+                "text": content,
+                "segments": [],
+                "language": "unknown",
+                "duration": 0
+            }
+        elif upload_data["type"].startswith("audio/") or upload_data["type"].startswith("video/"):
+            # For audio/video files, transcribe using audio processor
+            print(f"[JOB {job_id}] Transcribing audio/video file...")
+            with open(file_path, "rb") as f:
+                audio_content = f.read()
+            transcription_data = transcribe_audio(audio_content, upload_data['filename'], return_timestamps=True)
+            content = transcription_data["text"]
+            print(f"[JOB {job_id}] ✓ Transcription completed: {len(content)} characters, {len(transcription_data.get('segments', []))} segments")
         else:
-            # For audio/video files, we'd need a transcription service
-            # For now, return an error or use a placeholder
-            content = f"[Note: Audio/Video transcription not yet implemented. File: {upload_data['filename']}]"
-            print(f"[JOB {job_id}] ⚠ Non-text file type, using placeholder")
+            # Try to detect audio/video by file extension
+            filename_lower = upload_data['filename'].lower()
+            audio_extensions = ('.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac', '.wma')
+            video_extensions = ('.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v')
+            if filename_lower.endswith(audio_extensions) or filename_lower.endswith(video_extensions):
+                print(f"[JOB {job_id}] Transcribing audio/video file (detected by extension)...")
+                with open(file_path, "rb") as f:
+                    audio_content = f.read()
+                transcription_data = transcribe_audio(audio_content, upload_data['filename'], return_timestamps=True)
+                content = transcription_data["text"]
+                print(f"[JOB {job_id}] ✓ Transcription completed: {len(content)} characters, {len(transcription_data.get('segments', []))} segments")
+            else:
+                # Unknown file type
+                content = f"[Note: Unsupported file type. File: {upload_data['filename']}]"
+                print(f"[JOB {job_id}] ⚠ Unsupported file type, using placeholder")
+                transcription_data = {
+                    "text": content,
+                    "segments": [],
+                    "language": "unknown",
+                    "duration": 0
+                }
+        
+        # Save transcription to job
+        job["transcription"] = transcription_data
+        job["transcriptionTimestamp"] = transcription_timestamp
+        save_job_to_disk(job_id, job)  # Save transcription immediately
         
         job["progress"] = 30
         print(f"[JOB {job_id}] Progress: 30%")
@@ -327,15 +373,17 @@ def process_job(job_id: str, file_path: Path, upload_data: dict):
         # Process meeting minutes
         print(f"[JOB {job_id}] Step 2/4: Processing meeting minutes...")
         print(f"[JOB {job_id}] Calling process_meeting_minutes()...")
+        findings_timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
         result = process_meeting_minutes(content, job.get("options", {}))
         print(f"[JOB {job_id}] ✓ Meeting minutes processing completed")
         
         job["progress"] = 80
         print(f"[JOB {job_id}] Progress: 80%")
         
-        # Store result
+        # Store result with findings timestamp
         print(f"[JOB {job_id}] Step 3/4: Storing results...")
         job["result"] = result
+        job["findingsTimestamp"] = findings_timestamp
         job["progress"] = 100
         job["status"] = "completed"
         job["completedAt"] = time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -461,6 +509,8 @@ async def process_direct(
         
         content = ""
         filename = "direct_input"
+        transcription_data = None
+        transcription_timestamp = None
         
         # Get content from file or text
         if file:
@@ -475,16 +525,55 @@ async def process_direct(
             if file.content_type and file.content_type.startswith("text/"):
                 content = content_bytes.decode("utf-8")
                 print(f"[DIRECT] ✓ Decoded text file successfully")
+                transcription_data = {
+                    "text": content,
+                    "segments": [],
+                    "language": "unknown",
+                    "duration": 0
+                }
+                transcription_timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+            elif file.content_type and (file.content_type.startswith("audio/") or file.content_type.startswith("video/")):
+                # For audio/video files, transcribe using audio processor
+                print(f"[DIRECT] Transcribing audio/video file...")
+                transcription_data = transcribe_audio(content_bytes, file.filename, return_timestamps=True)
+                content = transcription_data["text"]
+                transcription_timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+                print(f"[DIRECT] ✓ Transcription completed: {len(content)} characters, {len(transcription_data.get('segments', []))} segments")
             else:
-                # For non-text files, we'd need transcription
-                content = f"[Note: Audio/Video transcription not yet implemented. File: {file.filename}]"
-                print(f"[DIRECT] ⚠ Non-text file type, using placeholder")
+                # Try to detect audio/video by file extension
+                filename_lower = (file.filename or "").lower()
+                audio_extensions = ('.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac', '.wma')
+                video_extensions = ('.mp4', '.avi', '.mov', '.mkv', '.webm', '.flv', '.wmv', '.m4v')
+                if filename_lower.endswith(audio_extensions) or filename_lower.endswith(video_extensions):
+                    print(f"[DIRECT] Transcribing audio/video file (detected by extension)...")
+                    transcription_data = transcribe_audio(content_bytes, file.filename, return_timestamps=True)
+                    content = transcription_data["text"]
+                    transcription_timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+                    print(f"[DIRECT] ✓ Transcription completed: {len(content)} characters, {len(transcription_data.get('segments', []))} segments")
+                else:
+                    # Unknown file type
+                    content = f"[Note: Unsupported file type. File: {file.filename}]"
+                    print(f"[DIRECT] ⚠ Unsupported file type, using placeholder")
+                    transcription_data = {
+                        "text": content,
+                        "segments": [],
+                        "language": "unknown",
+                        "duration": 0
+                    }
+                    transcription_timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
             filename = file.filename or "uploaded_file"
             print(f"[DIRECT] Processing file: {filename} ({len(content)} chars)")
         elif text:
             print(f"[DIRECT] Processing text input...")
             content = text
             filename = "text_input"
+            transcription_data = {
+                "text": content,
+                "segments": [],
+                "language": "unknown",
+                "duration": 0
+            }
+            transcription_timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
             print(f"[DIRECT] Text length: {len(content)} chars")
             print(f"[DIRECT] Text preview (first 100 chars): {content[:100]}...")
         else:
@@ -495,7 +584,7 @@ async def process_direct(
             print(f"[DIRECT] ERROR: Content is empty after processing")
             raise HTTPException(status_code=400, detail="Content is empty")
         
-        print(f"[DIRECT] ✓ Content validated: {len(content)} characters")
+        print(f"[DIRECT] ✓ Content validated: {content} characters")
         
         # Process meeting minutes directly
         print(f"[DIRECT] Starting meeting minutes processing...")
@@ -509,9 +598,39 @@ async def process_direct(
         print(f"[DIRECT] Key decisions count: {len(result.get('keyDecisions', []))}")
         print(f"[DIRECT] Action items count: {len(result.get('actionItems', []))}")
         
-        # Generate a temporary job ID for the response
+        # Generate job ID and save job data to storage
         job_id = str(uuid.uuid4())
         print(f"[DIRECT] Generated job ID: {job_id}")
+        
+        # Prepare findings timestamp
+        findings_timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+        
+        # Create job data structure
+        job_data = {
+            "jobId": job_id,
+            "uploadId": None,  # Direct processing doesn't have an upload ID
+            "status": "completed",
+            "progress": 100,
+            "startTime": time.time(),
+            "startTimeISO": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "completedAt": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "options": {},
+            "transcription": transcription_data,
+            "transcriptionTimestamp": transcription_timestamp,
+            "findingsTimestamp": findings_timestamp,
+            "result": result,
+            "filename": filename,
+            "source": "direct_processing"
+        }
+        
+        # Save to in-memory storage
+        JOBS_STORAGE[job_id] = job_data
+        print(f"[DIRECT] ✓ Job data stored in memory")
+        
+        # Persist to disk
+        print(f"[DIRECT] Saving job data to disk...")
+        save_job_to_disk(job_id, job_data)
+        print(f"[DIRECT] ✓ Job data saved to disk: {job_id}.json")
         
         print(f"[DIRECT] ✓ Processing completed successfully")
         print(f"[DIRECT] Returning results...")
@@ -608,60 +727,6 @@ async def get_results(job_id: str):
     )
 
 
-# Chat API Endpoint (existing)
-@app.post("/api/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
-    """
-    Chat endpoint for itinerary planning.
-    
-    Request body:
-    - message: String containing user's message/query
-    - sessionId: String for session tracking
-    
-    Response:
-    - success: Boolean indicating if response was generated successfully
-    - message: String containing the AI's response
-    """
-    try:
-        # Check if OPENAI_API_KEY is set
-        if not os.getenv("OPENAI_API_KEY"):
-            raise HTTPException(status_code=500, detail="OPENAI_API_KEY not found in environment variables.")
-
-        # Create system prompt for the itinerary planning agent
-        system_prompt = """You are an expert travel planner and itinerary builder. Your role is to help users plan amazing trips by:
-
-1. Understanding their travel preferences, interests, and requirements
-2. Creating detailed, day-by-day itineraries with specific activities, places to visit, and recommendations
-3. Formatting responses in Markdown with clear structure:
-   - Use ### for day headers (e.g., ### Day 1 - City Name)
-   - Use #### for time periods (e.g., #### ☀️ Morning, #### 🌤️ Afternoon, #### 🌙 Evening)
-   - Use **bold** for important place names
-   - Use [[Place Name|place_id]] format for place links (e.g., [[Rijksmuseum|place_rijks]])
-   - Include practical tips, restaurant recommendations, and cultural insights
-4. Being conversational and helpful, asking clarifying questions when needed
-5. Remembering context from previous messages in the conversation
-
-Always provide detailed, actionable itineraries that help travelers make the most of their trips."""
-
-        # Invoke agent with the user message
-        response_json = invoke_agent(
-            session_id=request.sessionId,
-            system_prompt=system_prompt,
-            message=request.message
-        )
-
-        print(f"[MAIN] Response: {response_json}")
-        
-        # Parse and return the JSON response
-        response_data = json.loads(response_json)
-        return ChatResponse(
-            success=response_data.get("success", True),
-            message=response_data.get("message", "")
-        )
-        
-    except Exception as e:
-        print(f"[MAIN] Error: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/v1/chat", response_model=MeetingChatResponse)
@@ -718,11 +783,15 @@ async def chat_about_meeting(request: MeetingChatRequest):
             "metadata": result.get("metadata", {})
         }
         
+        # Get transcription from job if available
+        transcription = job.get("transcription")
+        
         # Invoke agent to answer the question
         response_json = answer_meeting_question(
             meeting_context=meeting_context,
             question=request.message,
-            session_id=session_id
+            session_id=session_id,
+            transcription=transcription
         )
         
         print(f"[MAIN] Chat response generated for job {request.jobId}")
