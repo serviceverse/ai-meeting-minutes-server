@@ -354,10 +354,12 @@ def answer_meeting_question(meeting_context: dict, question: str, session_id: st
         JSON string with success and message fields
     """
     # Initialize LLM for Q&A
+    api_key = os.getenv("OPENAI_API_KEY")
+
     llm = ChatOpenAI(
-        model="gpt-4o",
+        model="gpt-4.1",
         api_key=api_key,
-        temperature=0.7,  # Higher temperature for more natural conversation
+        # temperature=0.3,  # Lower temperature for more consistent extraction
     )
     
     # Build context from meeting results
@@ -377,7 +379,7 @@ Meeting Metadata:
 - Date: {meeting_context.get('metadata', {}).get('meetingDate', 'N/A')}
 - Duration: {meeting_context.get('metadata', {}).get('durationSeconds', 0)} seconds
 - Participants: {', '.join(meeting_context.get('metadata', {}).get('participants', []))}
-"""
+""" 
     
     # Add transcription with timestamps if available
     if transcription and transcription.get('text'):
